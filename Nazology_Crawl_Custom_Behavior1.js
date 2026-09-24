@@ -12,95 +12,105 @@ class NazologyMultiPageArticle {
     return {};
   }
 
+  static runInIframe = false;
+
   async* run(ctx) {
+    const { addLink, getState, sleep } = ctx.Lib;
+
+    yield getState(
+      ctx,
+      `Nazology behavior START: ${window.location.href}`,
+      "started"
+    );
+
     const match = window.location.pathname.match(
       /^\/archives\/(\d+)(?:\/\d+)?\/?$/
     );
 
     if (!match) {
+      yield getState(ctx, "No article ID matched", "errors");
       return;
     }
 
     const articleId = match[1];
 
-    // 현재 기사와 같은 ID를 가진 페이지 링크만 허용
-    const pagePattern = new RegExp(
-      `^/archives/${articleId}/(?:[2-9]|[1-9]\\d+)/?$`
-    );
-
     const foundPages = new Set();
 
-    // 페이지 안의 모든 링크 검사
-    for (const anchor of document.querySelectorAll("a[href]")) {
+    for (const a of document.querySelectorAll("a[href]")) {
       let url;
 
       try {
-        url = new URL(anchor.href, window.location.href);
+        url = new URL(a.href, window.location.href);
       } catch {
         continue;
       }
 
-      // Nazology 내부 링크만
       if (url.hostname !== "nazology.kusuguru.co.jp") {
         continue;
       }
 
-      // 현재 기사 ID와 같은 /2, /3, /4... 만
-      if (!pagePattern.test(url.pathname)) {
+      const pageMatch = url.pathname.match(
+        new RegExp(`^/archives/${articleId}/([0-9]+)/?$`)
+      );
+
+      if (!pageMatch) {
         continue;
       }
 
-      // 추적용 query/hash가 있다면 제거
+      const pageNumber = Number(pageMatch[1]);
+
+      if (!Number.isInteger(pageNumber) || pageNumber < 2) {
+        continue;
+      }
+
       url.search = "";
       url.hash = "";
 
       foundPages.add(url.href);
     }
 
-    // 발견한 후속 페이지를 Browsertrix crawl queue에 추가
-    for (const url of foundPages) {
-      await ctx.Lib.addLink(url);
+    yield getState(
+      ctx,
+      `Found ${foundPages.size} additional pages for article ${articleId}`,
+      "scanned"
+    );
 
-      yield ctx.Lib.getState(
+    for (const url of foundPages) {
+      await addLink(url);
+
+      yield getState(
         ctx,
-        `Queued Nazology article page: ${url}`,
-        "queuedPages"
+        `ADD LINK: ${url}`,
+        "queued"
       );
     }
 
-    // Custom Behavior 사용 시 기사 이미지의 lazy-loading도
-    // 잘 이루어지도록 페이지를 천천히 아래까지 스크롤
-    let previousHeight = 0;
+    // 이미지 lazy-loading용 천천히 스크롤
+    let lastHeight = 0;
 
     for (let i = 0; i < 60; i++) {
-      const currentHeight = document.documentElement.scrollHeight;
+      window.scrollBy(0, Math.max(window.innerHeight * 0.8, 600));
 
-      window.scrollBy(
-        0,
-        Math.max(window.innerHeight * 0.8, 600)
-      );
+      await sleep(700);
 
-      await ctx.Lib.sleep(700);
-
+      const height = document.documentElement.scrollHeight;
       const atBottom =
-        window.scrollY + window.innerHeight >=
-        document.documentElement.scrollHeight - 10;
+        window.scrollY + window.innerHeight >= height - 20;
 
-      if (atBottom && currentHeight === previousHeight) {
+      if (atBottom && height === lastHeight) {
         break;
       }
 
-      previousHeight = currentHeight;
+      lastHeight = height;
     }
 
-    // 마지막 lazy-load 리소스를 위한 약간의 대기
-    await ctx.Lib.sleep(1500);
+    await sleep(1000);
 
     window.scrollTo(0, 0);
 
-    yield ctx.Lib.getState(
+    yield getState(
       ctx,
-      `Finished Nazology article ${articleId}`,
+      `Nazology behavior DONE: ${articleId}`,
       "finished"
     );
   }
